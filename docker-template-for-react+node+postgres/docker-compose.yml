@@ -1,0 +1,241 @@
+# =============================================================================
+# DOCKER COMPOSE TEMPLATE
+# Stack: Node/Express backend + React/Vite frontends + PostgreSQL
+# =============================================================================
+# HOW TO USE:
+#   1. Copy this file to the ROOT of your project (same level as backend/,
+#      frontend-user/, frontend-admin/ folders)
+#   2. Replace every value marked with <ANGLE_BRACKETS>
+#   3. Add or remove frontend service blocks depending on how many
+#      frontends your project has (one user-facing, one admin, etc.)
+#   4. Delete all comments once you're comfortable with the setup
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # DATABASE SERVICE
+  # ===========================================================================
+  # We use the official postgres image — no Dockerfile needed.
+  # ===========================================================================
+  db:
+    # -------------------------------------------------------------------------
+    # postgres:<VERSION>-alpine
+    # VERSION → pick a specific version so your app doesn't break on upgrades
+    # Common choices: 14, 15, 16
+    # -------------------------------------------------------------------------
+    image: postgres:<POSTGRES_VERSION>-alpine
+    # e.g. image: postgres:15-alpine
+
+    # -------------------------------------------------------------------------
+    # Restart policy
+    # "always" → restart the container if it crashes or if Docker daemon
+    #             restarts (e.g. after a server reboot)
+    # Other options: "no" (default), "on-failure", "unless-stopped"
+    # -------------------------------------------------------------------------
+    restart: always
+
+    # -------------------------------------------------------------------------
+    # Environment variables
+    # The official Postgres image reads these on FIRST startup to create the
+    # initial database user and database. Change the values to your own.
+    # POSTGRES_PASSWORD → use a strong password in production
+    # -------------------------------------------------------------------------
+    environment:
+      POSTGRES_USER: <DB_USER>
+      POSTGRES_PASSWORD: <DB_PASSWORD>
+      POSTGRES_DB: <DB_NAME>
+    # e.g.
+    # POSTGRES_USER: postgres
+    # POSTGRES_PASSWORD: supersecretpassword
+    # POSTGRES_DB: myapp_db
+
+    # -------------------------------------------------------------------------
+    # Port mapping format: "HOST_PORT:CONTAINER_PORT"
+    # -------------------------------------------------------------------------
+    # Postgres listens on 5432 inside the container (always).
+    # Mapping it to 5432 on your host lets you connect with DB GUI tools
+    # like DBeaver or TablePlus from your own machine.
+    #
+    # Your BACKEND container does NOT need this port mapping to talk to the DB.
+    # Containers on the same compose network talk to each other using service
+    # names, not host ports. This mapping is only for YOUR convenience.
+    #
+    # If you don't need external DB access, you can remove "ports:" entirely.
+    # -------------------------------------------------------------------------
+    ports:
+      - "5432:5432"
+
+    # -------------------------------------------------------------------------
+    # Named volume for data persistence
+    # -------------------------------------------------------------------------
+    # Without this, ALL your data is wiped every time the container is removed.
+    # /var/lib/postgresql/data is where Postgres stores its files internally.
+    # The named volume "postgres_data" is declared at the bottom of this file.
+    # -------------------------------------------------------------------------
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    # -------------------------------------------------------------------------
+    # Health check
+    # -------------------------------------------------------------------------
+    # Runs "pg_isready" every 5 seconds to check if Postgres is ready.
+    # This is what allows backend to use "condition: service_healthy" below.
+    # Without this, the backend might crash trying to connect before
+    # Postgres finishes initializing (they start at the same time otherwise).
+    # -------------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U <DB_USER>"]
+      # e.g. test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s   # run the check every 5 seconds
+      timeout: 5s    # fail the check if it takes more than 5 seconds
+      retries: 5     # mark as unhealthy after 5 consecutive failures
+
+
+  # ===========================================================================
+  # BACKEND SERVICE
+  # ===========================================================================
+  backend:
+    # -------------------------------------------------------------------------
+    # "build: ./backend" tells Compose to find the Dockerfile in ./backend/
+    # and build an image from it.
+    # -------------------------------------------------------------------------
+    build: ./<BACKEND_FOLDER_NAME>
+    # e.g. build: ./backend
+
+    restart: always
+
+    # -------------------------------------------------------------------------
+    # Expose backend ports to your host machine
+    # -------------------------------------------------------------------------
+    # Your frontend (running in the browser) calls the API via localhost:PORT.
+    # The browser lives on your HOST machine, not inside Docker, so the host
+    # port must be mapped.
+    #
+    # Format: "HOST_PORT:CONTAINER_PORT"
+    # CONTAINER_PORT must match what your Express app listens on (app.listen).
+    # HOST_PORT is what you type in Postman / browser / frontend VITE_API_URL.
+    # -------------------------------------------------------------------------
+    ports:
+      - "<HOST_PORT>:<CONTAINER_PORT>"
+      # e.g. - "3000:3000"
+
+      # If you use Prisma Studio, add this too:
+      # - "5555:5555"
+
+    # -------------------------------------------------------------------------
+    # Environment variables passed into the container at runtime
+    # -------------------------------------------------------------------------
+    environment:
+      # DATABASE_URL — used by Prisma to connect to the database.
+      # CRITICAL: Use the SERVICE NAME "db" as the hostname, NOT "localhost".
+      # Inside Docker's network, "db" resolves to the db container's IP.
+      # "localhost" inside the backend container refers to itself, not the DB.
+      #
+      # Format: postgresql://<USER>:<PASSWORD>@<SERVICE_NAME>:<PORT>/<DB_NAME>?schema=public
+      - DATABASE_URL=postgresql://<DB_USER>:<DB_PASSWORD>@db:<DB_PORT>/<DB_NAME>?schema=public
+      # e.g. - DATABASE_URL=postgresql://postgres:supersecretpassword@db:5432/myapp_db?schema=public
+
+      # The port your Express app should listen on (reads process.env.PORT)
+      - PORT=<APP_PORT>
+      # e.g. - PORT=3000
+
+      # CORS allowed origins — the URLs your frontends will be accessed from
+      # on the host machine (what the browser actually navigates to).
+      - FRONTEND_USER_URL=http://localhost:<USER_FRONTEND_HOST_PORT>
+      - FRONTEND_ADMIN_URL=http://localhost:<ADMIN_FRONTEND_HOST_PORT>
+      # e.g.
+      # - FRONTEND_USER_URL=http://localhost:4001
+      # - FRONTEND_ADMIN_URL=http://localhost:4000
+
+      # Add any other env vars your app needs:
+      # - JWT_SECRET=<YOUR_SECRET>
+      # - NODE_ENV=production
+
+    # -------------------------------------------------------------------------
+    # Wait for the database to be healthy before starting the backend.
+    # "service_healthy" uses the healthcheck defined in the db service above.
+    # Plain "depends_on: db" only waits for the container to START, not for
+    # Postgres to be READY — which causes connection errors on first boot.
+    # -------------------------------------------------------------------------
+    depends_on:
+      db:
+        condition: service_healthy
+
+
+  # ===========================================================================
+  # USER-FACING FRONTEND SERVICE
+  # ===========================================================================
+  # Remove this entire block if your project only has one frontend.
+  # ===========================================================================
+  user-frontend:
+    build:
+      # "context" is the folder Docker uses as the build root.
+      # The Dockerfile inside that folder is used automatically.
+      context: ./<USER_FRONTEND_FOLDER>
+      # e.g. context: ./frontend-user
+
+      # -----------------------------------------------------------------------
+      # Build arguments — passed into the Dockerfile as ARG values
+      # -----------------------------------------------------------------------
+      # VITE_ variables must be passed at BUILD time because Vite bakes them
+      # into the JS bundle. You cannot change them at runtime.
+      #
+      # VITE_API_URL must be the URL the BROWSER will use to call the backend.
+      # The browser runs on the HOST machine, so use localhost:<HOST_PORT>.
+      # Do NOT use the Docker service name here (the browser can't resolve it).
+      # -----------------------------------------------------------------------
+      args:
+        - VITE_API_URL=http://localhost:<BACKEND_HOST_PORT>/api
+        # e.g. - VITE_API_URL=http://localhost:3000/api
+
+        # Add more VITE_ args if your app needs them:
+        # - VITE_SOME_OTHER_VAR=value
+
+    # -------------------------------------------------------------------------
+    # Port mapping for the frontend
+    # -------------------------------------------------------------------------
+    # Container side is always 80 (Nginx default HTTP port).
+    # Host side is any free port on your machine.
+    # Pick a different host port for each frontend to avoid conflicts.
+    # -------------------------------------------------------------------------
+    ports:
+      - "<HOST_PORT>:80"
+      # e.g. - "4001:80"
+
+    depends_on:
+      - backend
+
+
+  # ===========================================================================
+  # ADMIN FRONTEND SERVICE
+  # ===========================================================================
+  # This is identical in structure to user-frontend — just different
+  # folder, host port, and optionally different VITE_ args.
+  # Remove this block if your project only has one frontend.
+  # ===========================================================================
+  admin-frontend:
+    build:
+      context: ./<ADMIN_FRONTEND_FOLDER>
+      # e.g. context: ./frontend-admin
+      args:
+        - VITE_API_URL=http://localhost:<BACKEND_HOST_PORT>/api
+        # e.g. - VITE_API_URL=http://localhost:3000/api
+    ports:
+      - "<HOST_PORT>:80"
+      # e.g. - "4000:80"
+    depends_on:
+      - backend
+
+
+# =============================================================================
+# NAMED VOLUMES
+# =============================================================================
+# Volumes listed under services must be declared here too.
+# Docker creates and manages these on your host machine.
+# Data inside them survives container restarts and removals.
+# =============================================================================
+volumes:
+  postgres_data:
+  # If you add more volumes in any service above, declare them here too:
+  # my_other_volume:
