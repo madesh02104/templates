@@ -1,0 +1,236 @@
+# =============================================================================
+# CI/CD PIPELINE TEMPLATE
+# Stack: Node.js + Prisma + Jest | React + Vite + ESLint | Docker + GHCR
+#
+# HOW TO USE:
+#   1. Copy this file to .github/workflows/ci.yml in your project
+#   2. Replace all placeholder values marked with <REPLACE_THIS>
+#   3. Set VITE_API_URL in: GitHub Repo → Settings → Variables → Actions
+#   4. Set workflow permissions: Settings → Actions → General →
+#      "Read and write permissions"
+# =============================================================================
+
+name: CI/CD Pipeline
+
+# -----------------------------------------------------------------------------
+# TRIGGERS: When does this pipeline run?
+# -----------------------------------------------------------------------------
+on:
+  push:
+    branches: [main]         # Runs on every push to main
+  pull_request:
+    branches: [main]         # Runs on every PR targeting main (before merge)
+
+# -----------------------------------------------------------------------------
+# JOB 1: LINT AND TEST
+# Validates code quality. If this fails, Job 2 never runs.
+# -----------------------------------------------------------------------------
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest   # GitHub spins up a free Ubuntu VM for this job
+
+    steps:
+      # Checks out your repo code onto the VM
+      - uses: actions/checkout@v4
+
+      # Installs the specified Node.js version on the VM
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18   # <REPLACE_THIS> Change to match your Node version
+
+      # -----------------------------------------------------------
+      # BACKEND: Install dependencies and run Jest tests
+      # Uses "npm ci" instead of "npm install" because:
+      #   - Reads exact versions from package-lock.json
+      #   - Fails if package.json and lockfile are out of sync
+      #   - Faster and deterministic (same result every time)
+      # -----------------------------------------------------------
+      - name: Backend - Install and Test
+        working-directory: ./<REPLACE_THIS>   # e.g. ./backend
+        run: |
+          npm ci
+          npm test
+
+      # -----------------------------------------------------------
+      # FRONTEND 1: Install dependencies and run ESLint
+      # ESLint catches code quality issues before they reach production
+      # -----------------------------------------------------------
+      - name: Frontend User - Install and Lint
+        working-directory: ./<REPLACE_THIS>   # e.g. ./frontend-user
+        run: |
+          npm ci
+          npm run lint
+
+      # -----------------------------------------------------------
+      # FRONTEND 2: Remove this block if you only have one frontend
+      # -----------------------------------------------------------
+      - name: Frontend Admin - Install and Lint
+        working-directory: ./<REPLACE_THIS>   # e.g. ./frontend-admin
+        run: |
+          npm ci
+          npm run lint
+
+  # ---------------------------------------------------------------------------
+  # JOB 2: BUILD DOCKER IMAGES AND PUSH TO GHCR
+  # Only runs after Job 1 passes AND only on direct pushes to main.
+  # Pull requests trigger Job 1 only — unmerged code never gets pushed.
+  # ---------------------------------------------------------------------------
+  docker-build-push:
+    needs: lint-and-test     # Waits for Job 1 to succeed before starting
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # Permissions needed to push images to GHCR using GITHUB_TOKEN
+    # GITHUB_TOKEN is auto-injected by GitHub — no manual secret needed
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Docker image names must be all-lowercase.
+      # github.repository can contain uppercase (e.g. "MyBlogSite"),
+      # so we convert it here and store in $GITHUB_ENV for later steps.
+      - name: Lowercase repository name
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # Log in to GHCR using the auto-injected GITHUB_TOKEN
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------
+      # BUILD AND PUSH: BACKEND IMAGE
+      #
+      # Two tags on every push:
+      #   :latest → always points to the newest image
+      #   :<sha>  → immutable tag for this exact commit, used for rollbacks
+      # -----------------------------------------------------------
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./<REPLACE_THIS>   # e.g. ./backend
+          push: true
+          tags: |
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:latest
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:${{ github.sha }}
+
+      # -----------------------------------------------------------
+      # BUILD AND PUSH: FRONTEND IMAGES
+      #
+      # VITE_API_URL is passed as a build argument because Vite bakes
+      # environment variables into the bundle at BUILD TIME, not runtime.
+      # Set VITE_API_URL in: GitHub Repo → Settings → Variables → Actions
+      # -----------------------------------------------------------
+      - name: Build and push user frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./<REPLACE_THIS>   # e.g. ./frontend-user
+          push: true
+          build-args: |
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+          tags: |
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:latest
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:${{ github.sha }}
+
+      # Remove this block if you only have one frontend
+      - name: Build and push admin frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./<REPLACE_THIS>   # e.g. ./frontend-admin
+          push: true
+          build-args: |
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+          tags: |
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:latest
+            ghcr.io/${{ env.REPO_LOWER }}/<REPLACE_THIS>:${{ github.sha }}
+
+
+# =============================================================================
+# KEYWORD REFERENCE
+# =============================================================================
+
+# name:
+#   The display name shown in the GitHub Actions UI.
+#   Can be anything descriptive. Appears on the Actions tab of your repo.
+
+# on:
+#   Defines what events trigger the workflow.
+#   Common values: push, pull_request, schedule, workflow_dispatch (manual trigger)
+
+# branches:
+#   Filters the trigger to only specific branches.
+#   [main] means only pushes/PRs targeting the "main" branch run this workflow.
+
+# jobs:
+#   A workflow is made up of one or more jobs.
+#   By default all jobs run in PARALLEL unless you use "needs".
+
+# runs-on:
+#   The type of machine (runner) GitHub should use to execute this job.
+#   "ubuntu-latest" is the most common. Also available: windows-latest, macos-latest.
+
+# needs:
+#   Makes a job wait for another job to finish successfully before starting.
+#   Creates a dependency chain between jobs.
+
+# if:
+#   A conditional expression. The job/step only runs when this evaluates to true.
+#   github.event_name == 'push' → skips this job on pull_request events.
+#   github.ref == 'refs/heads/main' → only runs when the push is to main branch.
+
+# steps:
+#   An ordered list of tasks inside a job.
+#   Each step runs one after another on the same VM.
+
+# uses:
+#   Runs a pre-built reusable Action from the GitHub Actions Marketplace.
+#   Format: owner/action-name@version
+#   e.g. actions/checkout@v4 → official GitHub Action to clone your repo onto the VM.
+
+# with:
+#   Passes input parameters into a "uses" action.
+#   Each action defines its own accepted inputs (check its documentation).
+
+# run:
+#   Executes a raw shell command directly on the VM.
+#   Use | (pipe/block scalar) to run multiple commands, one per line.
+
+# working-directory:
+#   Changes the folder the shell command runs from.
+#   Without this, every "run" command starts from the repo root.
+
+# permissions:
+#   Controls what the auto-injected GITHUB_TOKEN is allowed to do.
+#   contents: read  → can read repo files
+#   packages: write → can push images to GHCR
+
+# env:
+#   Sets environment variables available to steps in that job.
+#   $GITHUB_ENV is a special file — writing to it makes the variable
+#   available to ALL subsequent steps in the same job.
+
+# ${{ secrets.NAME }}:
+#   Reads an encrypted secret stored in GitHub repo settings.
+#   Never printed in logs. Use for passwords, tokens, API keys.
+
+# ${{ vars.NAME }}:
+#   Reads a plain (non-secret) repository variable from GitHub repo settings.
+#   Use for non-sensitive config values like URLs, port numbers.
+
+# ${{ github.repository }}:
+#   A built-in GitHub context variable. Always available in every workflow.
+#   Contains the full repo name, e.g. "madesh02104/MyBlogSite"
+#   Other useful ones:
+#     github.actor      → username of whoever triggered the workflow
+#     github.sha        → full git commit hash of the triggering push
+#     github.ref        → full branch/tag ref, e.g. "refs/heads/main"
+#     github.event_name → name of the event that triggered the workflow
+
+# ${{ env.NAME }}:
+#   Reads a variable set earlier in the same job via $GITHUB_ENV.
+#   Different from ${{ vars.NAME }} which reads from repo settings.
